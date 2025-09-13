@@ -360,22 +360,23 @@ export default function ChatInterface() {
 
   const scheduleAutoScroll = () => {
     if (scrollRAFRef.current != null) return
-    scrollRAFRef.current = window.requestAnimationFrame(() => {
+    scrollRAFRef.current = requestAnimationFrame(() => {
       scrollRAFRef.current = null
-      const container = messagesContainerRef.current
+      const container = messagesContainerRef.current?.querySelector('.overflow-y-auto') as HTMLElement
       if (!container) return
+      
       // Only auto-scroll if user is near bottom to avoid disrupting manual scroll
       const distanceFromBottom = container.scrollHeight - (container.scrollTop + container.clientHeight)
-      // Debounce smooth auto-scroll to at most ~8 times per second to avoid jitter during token streams
       const now = performance.now()
-      if (distanceFromBottom < 160) {
-        if (now - lastScrollAtRef.current >= 120) {
-          try {
-            container.scrollTo({ top: container.scrollHeight, behavior: "smooth" })
-          } catch {
-            container.scrollTop = container.scrollHeight
-          }
+      
+      // More aggressive debounce - only scroll at most 4 times per second
+      if (distanceFromBottom < 120 && now - lastScrollAtRef.current >= 250) {
+        try {
+          // Use direct scrollTop instead of smooth scrolling for more predictable behavior
+          container.scrollTop = container.scrollHeight
           lastScrollAtRef.current = now
+        } catch (error) {
+          console.warn('Scroll error:', error)
         }
       }
     })
@@ -1101,8 +1102,9 @@ export default function ChatInterface() {
         </div>
 
         {/* Messages */}
-        <div ref={messagesContainerRef} className="flex-1 overflow-y-auto min-h-0">
-          <div className="w-full p-4 space-y-6 pb-24">
+        <div ref={messagesContainerRef} className="flex-1 overflow-hidden min-h-0">
+          <div className="h-full overflow-y-auto">
+            <div className="w-full p-4 space-y-6 pb-24">
             {messages.length === 0 ? (
               <div className="text-center py-12">
                 <div className="text-6xl mb-4">🤖</div>
@@ -1247,6 +1249,7 @@ export default function ChatInterface() {
               </>
             )}
             <div ref={messagesEndRef} />
+            </div>
           </div>
         </div>
 
