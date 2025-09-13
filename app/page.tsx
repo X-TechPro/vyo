@@ -350,31 +350,39 @@ export default function ChatInterface() {
   const abortControllerRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const scrollRAFRef = useRef<number | null>(null)
+  const lastScrollAtRef = useRef<number>(0)
 
   const currentChat = chats.find((chat) => chat.id === currentChatId)
   const messages = currentChat?.messages || []
 
   const favoriteModels = models.filter((model) => (settings.favoriteModels || []).includes(model.id))
 
-  const scrollToBottom = () => {
-    const container = messagesContainerRef.current
-    if (container) {
-      try {
-        container.scrollTo({ top: container.scrollHeight, behavior: "smooth" })
-        return
-      } catch (e) {
-        // some browsers may not support smooth option; fallback to instant
-        container.scrollTop = container.scrollHeight
-        return
+  const scheduleAutoScroll = () => {
+    if (scrollRAFRef.current != null) return
+    scrollRAFRef.current = window.requestAnimationFrame(() => {
+      scrollRAFRef.current = null
+      const container = messagesContainerRef.current
+      if (!container) return
+      // Only auto-scroll if user is near bottom to avoid disrupting manual scroll
+      const distanceFromBottom = container.scrollHeight - (container.scrollTop + container.clientHeight)
+      // Debounce smooth auto-scroll to at most ~8 times per second to avoid jitter during token streams
+      const now = performance.now()
+      if (distanceFromBottom < 160) {
+        if (now - lastScrollAtRef.current >= 120) {
+          try {
+            container.scrollTo({ top: container.scrollHeight, behavior: "smooth" })
+          } catch {
+            container.scrollTop = container.scrollHeight
+          }
+          lastScrollAtRef.current = now
+        }
       }
-    }
-
-    // Fallback: scroll element (may scroll the document)
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    })
   }
 
   useEffect(() => {
-    scrollToBottom()
+    scheduleAutoScroll()
   }, [messages])
 
   useEffect(() => {
@@ -1170,7 +1178,7 @@ export default function ChatInterface() {
                             )}
                           </div>
                         )}
-                        {!(message.modelId === "glm-4.5-flash" && message.isStreaming) && (
+                        {!(message.modelId === "glm-4.5-flash" && (!message.content || message.content.length === 0)) && (
                           <>
                             <div className="bg-card border border-border rounded-2xl p-4 shadow-lg w-[90vw] max-w-[90vw]">
                               <div className="prose prose-sm dark:prose-invert max-w-none break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_katex]:text-sm [&_katex-display]:text-sm">
@@ -1186,16 +1194,18 @@ export default function ChatInterface() {
                                 </ReactMarkdown>
                               </div>
                             </div>
-                            <div className="w-[90vw] max-w-[90vw] flex justify-end mt-1">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 px-2"
-                                onClick={() => handleCopyMessage(message)}
-                              >
-                                <Copy className="h-4 w-4" />
-                              </Button>
-                            </div>
+                            {!message.isStreaming && (
+                              <div className="w-[90vw] max-w-[90vw] flex justify-end mt-1">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 px-2"
+                                  onClick={() => handleCopyMessage(message)}
+                                >
+                                  <Copy className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            )}
                           </>
                         )}
                       </div>
