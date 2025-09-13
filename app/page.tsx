@@ -25,6 +25,7 @@ import {
   Eye,
   EyeOff,
   ChevronDown,
+  ChevronRight,
   Star,
   Search,
   Plus,
@@ -49,6 +50,8 @@ interface Message {
   role: "user" | "assistant"
   timestamp: Date
   isStreaming?: boolean
+  reasoningContent?: string
+  modelId?: string
 }
 
 interface Chat {
@@ -337,6 +340,11 @@ export default function ChatInterface() {
     apiKey: "",
     favoriteModels: [],
   })
+  // GLM 4.5 Flash reasoning stream state
+  const [reasoningExpandedMap, setReasoningExpandedMap] = useState<Record<string, boolean>>({})
+  const toggleReasoningExpanded = (id: string) => {
+    setReasoningExpandedMap((prev) => ({ ...prev, [id]: !(prev[id] ?? true) }))
+  }
 
   const { toast } = useToast()
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -547,6 +555,21 @@ export default function ChatInterface() {
     // Highlighting handled by CodeBlock component; removed redundant DOM highlight
   }
 
+  const updateStreamingReasoning = (chatId: string, messageId: string, delta: string) => {
+    setChats((prevChats) => {
+      const updatedChats = prevChats.map((chat) => {
+        if (chat.id !== chatId) return chat
+        const updatedMessages = chat.messages.map((msg) => {
+          if (msg.id !== messageId) return msg
+          const prev = msg.reasoningContent || ""
+          return { ...msg, reasoningContent: prev + delta }
+        })
+        return { ...chat, messages: updatedMessages, updatedAt: new Date() }
+      })
+      return updatedChats
+    })
+  }
+
   const completeStreamingMessage = (chatId: string, messageId: string) => {
     setChats((prevChats) => {
       const updatedChats = prevChats.map((chat) =>
@@ -628,14 +651,16 @@ export default function ChatInterface() {
 
     setIsGenerating(true)
     abortControllerRef.current = new AbortController()
+ const aiMessage: Message = {
+   id: Date.now().toString() + "-ai",
+   content: "",
+   role: "assistant",
+   timestamp: new Date(),
+   isStreaming: true,
+   reasoningContent: selectedModel.id === "glm-4.5-flash" ? "" : undefined,
+   modelId: selectedModel.id,
+ }
 
-    const aiMessage: Message = {
-      id: Date.now().toString() + "-ai",
-      content: "",
-      role: "assistant",
-      timestamp: new Date(),
-      isStreaming: true,
-    }
 
     addMessage(chatId, aiMessage)
 
@@ -694,13 +719,16 @@ export default function ChatInterface() {
               const data = line.slice(6)
               try {
                 const parsed = JSON.parse(data)
-                const content = parsed.choices?.[0]?.delta?.content
-                if (content) {
+                const delta = parsed.choices?.[0]?.delta || {}
+                const content = delta.content
+                const reasoning = delta.reasoning_content
+                if (typeof reasoning === "string" && reasoning.length > 0 && selectedModel.id === "glm-4.5-flash") {
+                  updateStreamingReasoning(chatId, aiMessage.id, reasoning)
+                }
+                if (typeof content === "string" && content.length > 0) {
                   accumulatedContent += content
                   updateStreamingMessage(chatId, aiMessage.id, accumulatedContent)
-                        // Try to highlight any newly completed code fragments in the streaming output
-                        // so users see syntax highlighting as it arrives.
-                        // Highlighting deferred to CodeBlock component after streaming completes
+                  // Highlighting deferred to CodeBlock component after streaming completes
                 }
               } catch (e) {
                 // Skip invalid JSON
@@ -1122,36 +1150,60 @@ export default function ChatInterface() {
                       </div>
                     ) : (
                       <div className="w-full flex flex-col items-center px-2 sm:px-0">
-                        <div className="bg-card border border-border rounded-2xl p-4 shadow-lg w-[90vw] max-w-[90vw]">
-                          <div className="prose prose-sm dark:prose-invert max-w-none break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_katex]:text-sm [&_katex-display]:text-sm">
-                            <ReactMarkdown
-                              components={{
-                                ...MarkdownComponents,
-                                code: (props:any) => <MarkdownCode {...props} isStreaming={message.isStreaming} />,
-                              }}
-                              remarkPlugins={[[remarkMath, { singleDollarTextMath: true }], remarkGfm]}
-                              rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore", trust: true }]]}
+                        {(message.modelId === "glm-4.5-flash" && (message.isStreaming || (message.reasoningContent && message.reasoningContent.length > 0))) && (
+                          <div className="w-[90vw] max-w-[90vw] mb-4">
+                            <button
+                              type="button"
+                              onClick={() => toggleReasoningExpanded(message.id)}
+                              className="w-full flex items-center justify-between bg-transparent"
                             >
-                              {normalizeMathDelimiters(message.content)}
-                            </ReactMarkdown>
+                              <span className="inline-flex items-center gap-2 rounded-full bg-zinc-800 text-white px-2 py-1 text-xs md:text-sm">
+                                <Brain className="h-3.5 w-3.5" />
+                                <span>{message.isStreaming ? "Thinking..." : "Thinking completed"}</span>
+                              </span>
+                              <ChevronRight className={`h-3.5 w-3.5 text-white transition-transform ${(reasoningExpandedMap[message.id] ?? true) ? "rotate-90" : ""}`} />
+                            </button>
+                            {(reasoningExpandedMap[message.id] ?? true) && (
+                              <div className="mt-2 pl-2 md:pl-3 text-xs md:text-sm text-muted-foreground/90 whitespace-pre-wrap">
+                                {message.reasoningContent}
+                              </div>
+                            )}
                           </div>
-                        </div>
-                        <div className="w-[90vw] max-w-[90vw] flex justify-end mt-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 px-2"
-                            onClick={() => handleCopyMessage(message)}
-                          >
-                            <Copy className="h-4 w-4" />
-                          </Button>
-                        </div>
+                        )}
+                        {!(message.modelId === "glm-4.5-flash" && message.isStreaming) && (
+                          <>
+                            <div className="bg-card border border-border rounded-2xl p-4 shadow-lg w-[90vw] max-w-[90vw]">
+                              <div className="prose prose-sm dark:prose-invert max-w-none break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_katex]:text-sm [&_katex-display]:text-sm">
+                                <ReactMarkdown
+                                  components={{
+                                    ...MarkdownComponents,
+                                    code: (props:any) => <MarkdownCode {...props} isStreaming={message.isStreaming} />,
+                                  }}
+                                  remarkPlugins={[[remarkMath, { singleDollarTextMath: true }], remarkGfm]}
+                                  rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore", trust: true }]]}
+                                >
+                                  {normalizeMathDelimiters(message.content)}
+                                </ReactMarkdown>
+                              </div>
+                            </div>
+                            <div className="w-[90vw] max-w-[90vw] flex justify-end mt-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2"
+                                onClick={() => handleCopyMessage(message)}
+                              >
+                                <Copy className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </>
+                        )}
                       </div>
                     )}
                   </motion.div>
                 ))}
 
-                {isGenerating && (
+                {isGenerating && selectedModel?.id !== "glm-4.5-flash" && (
                   <motion.div
                     className="flex justify-center animate-fadeInUp"
                     initial="hidden"
