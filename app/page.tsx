@@ -1,6 +1,6 @@
 "use client"
 
-import type React from "react"
+import * as React from "react"
 
 import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
@@ -31,6 +31,7 @@ import {
   Trash2,
   Square,
 } from "lucide-react"
+import { Copy } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -39,6 +40,8 @@ import rehypeKatex from "rehype-katex"
 import { storage } from "@/lib/db"
 import { motion } from "framer-motion"
 import hljs from "highlight.js"
+import katex from "katex"
+/* Removed duplicate React import */
 
 interface Message {
   id: string
@@ -66,6 +69,10 @@ interface OpenRouterModel {
     completion: string
   }
 }
+const glmFlashModel: OpenRouterModel = {
+  id: "glm-4.5-flash",
+  name: "GLM 4.5 Flash",
+};
 
 interface SettingsData {
   apiKey: string
@@ -97,7 +104,7 @@ const typingVariants: any = {
   },
 }
 
-const CodeBlock = ({ children, className, ...props }: any) => {
+const CodeBlock = ({ children, className, isStreaming, ...props }: any) => {
   const [copied, setCopied] = useState(false)
   const codeRef = useRef<HTMLElement>(null)
 
@@ -109,10 +116,11 @@ const CodeBlock = ({ children, className, ...props }: any) => {
       return
     }
 
-    if (codeRef.current && language !== "text") {
+    // Skip highlighting while streaming; highlight only when content is final
+    if (codeRef.current && language !== "text" && !isStreaming) {
       hljs.highlightElement(codeRef.current)
     }
-  }, [code, language])
+  }, [code, language, isStreaming])
 
   const copyToClipboard = async () => {
     try {
@@ -142,6 +150,37 @@ const CodeBlock = ({ children, className, ...props }: any) => {
         </code>
       </pre>
     </div>
+  )
+}
+
+const MarkdownCode = ({ children, className, isStreaming, ...props }: any) => {
+  const code = children?.toString() || ""
+  const language = className?.replace("language-", "") || "text"
+
+  // Render fenced math blocks (```math / ```latex / ```tex / ```katex) with KaTeX
+  if (["math", "latex", "tex", "katex"].includes(language)) {
+    try {
+      const html = katex.renderToString(code, {
+        displayMode: true,
+        throwOnError: false,
+        strict: false,
+      })
+      return <div className="katex-display" dangerouslySetInnerHTML={{ __html: html }} />
+    } catch {
+      // Fallback to raw code if KaTeX fails
+      return (
+        <pre className="overflow-x-auto">
+          <code>{code}</code>
+        </pre>
+      )
+    }
+  }
+
+  // Otherwise, regular code highlighting
+  return (
+    <CodeBlock className={className} isStreaming={isStreaming} {...props}>
+      {children}
+    </CodeBlock>
   )
 }
 
@@ -191,6 +230,9 @@ function normalizeMathDelimiters(text: string) {
   // This will match the shortest content between square brackets.
   const bracketRegex = /\[\s*([^\]\n]+?)\s*\](?!\()/g
   let normalized = text
+    // Strip zero-width / BOM chars and non-breaking spaces that break KaTeX parsing
+    .replace(/[\u200B\u200C\u200D\uFEFF]/g, "")
+    .replace(/\u00A0/g, " ")
 
   // 1) Unescape common double-escaped delimiters produced by some generators or APIs
   //    e.g. "\\( E = mc^2 \\)" -> "\( E = mc^2 \)" and "\\$\\$...\\$\\$" -> "$$...$$"
@@ -208,24 +250,50 @@ function normalizeMathDelimiters(text: string) {
   // 3) Convert \[ ... \] to $$ ... $$ so display math is uniform
   normalized = normalized.replace(/\\\[\s*([\s\S]+?)\s*\\\]/g, (_, group1) => `$$${group1}$$`)
 
-  // 4) If inline \( ... \) contains a leading \displaystyle, force display math
+  // 4) Normalize inline math \( ... \)
+  // - If it starts with \displaystyle or contains a LaTeX environment (e.g. \begin{...})
+  //   force display math so environments like bmatrix/align/split render correctly.
+  // - Otherwise convert \( ... \) to inline $...$ so remark-math reliably parses it.
   normalized = normalized.replace(/\\\(\s*([\s\S]+?)\s*\\\)/g, (_, group1) => {
     const trimmed = (group1 || "").trim()
-    if (/^\\displaystyle\b/.test(trimmed)) {
+    if (/^\\displaystyle\b/.test(trimmed) || /\\begin\{[a-zA-Z*]+\}/.test(trimmed)) {
       const cleaned = trimmed.replace(/^\\displaystyle\b\s*/, "")
       return `$$${cleaned}$$`
     }
-    // otherwise keep as inline (remark-math will parse it)
-    return `\\(${group1}\\)`
+    return `$${trimmed}$`
   })
 
-  // 5) Handle LaTeX environments: equation, align, align*, cases
-  // Convert them into display math. KaTeX doesn't support equation numbering or align numbering,
-  // so align -> aligned inside display math for proper column alignment.
-  normalized = normalized.replace(/\\begin\{equation\}([\s\S]*?)\\end\{equation\}/g, (_, body) => `$$${body}$$`)
-  normalized = normalized.replace(/\\begin\{align\*?\}([\s\S]*?)\\end\{align\*?\}/g, (_, body) => `$$\\begin{aligned}${body}\\end{aligned}$$`)
-  normalized = normalized.replace(/\\begin\{cases\}([\s\S]*?)\\end\{cases\}/g, (_, body) => `$$\\begin{cases}${body}\\end{cases}$$`)
-
+  // 5) Handle LaTeX environments: equation, equation*, align/align*, alignat, gather/gather*, split, cases.
+  // IMPORTANT: Do not inject $$ here to avoid double-wrapping when the source already uses \[...\] or $$...$$.
+  // We only normalize environment names so KaTeX-friendly forms are produced; outer display/inline wrapping is handled elsewhere.
+  normalized = normalized.replace(/\\begin\{equation\}([\s\S]*?)\\end\{equation\}/g, (_, body) => `${body}`)
+  normalized = normalized.replace(/\\begin\{equation\*\}([\s\S]*?)\\end\{equation\*\}/g, (_, body) => `${body}`)
+ 
+  // align/align* -> aligned for column alignment (keep inside the existing display wrapper)
+  normalized = normalized.replace(/\\begin\{align\*?\}([\s\S]*?)\\end\{align\*?\}/g, (_, body) => `\\begin{aligned}${body}\\end{aligned}`)
+ 
+  // alignat with column count (supported by KaTeX)
+  normalized = normalized.replace(/\\begin\{alignat\}\{([^\}]+)\}([\s\S]*?)\\end\{alignat\}/g, (_, cols, body) => `\\begin{alignat}{${cols}}${body}\\end{alignat}`)
+ 
+  // gather / gather*
+  normalized = normalized.replace(/\\begin\{gather\*?\}([\s\S]*?)\\end\{gather\*?\}/g, (_, body) => `\\begin{gather}${body}\\end{gather}`)
+ 
+  // split (kept as-is, assuming it sits inside a display wrapper)
+  normalized = normalized.replace(/\\begin\{split\}([\s\S]*?)\\end\{split\}/g, (_, body) => `\\begin{split}${body}\\end{split}`)
+ 
+  // cases
+  normalized = normalized.replace(/\\begin\{cases\}([\s\S]*?)\\end\{cases\}/g, (_, body) => `\\begin{cases}${body}\\end{cases}`)
+// Convert \\boxed{ \\begin{array}{...} ... } to \\boxed{\\begin{aligned} ... \\end{aligned}}
+// This avoids KaTeX issues with array rows like {} and improves rendering in summary blocks.
+normalized = normalized.replace(/\\boxed\\{\\s*\\begin\\{array\\}\\{[^}]+\\}([\\s\\S]*?)\\end\\{array\\}\\s*\\}/g, (_match, body) => {
+  const cleaned = String(body)
+    .split(/\\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && l !== '{}' && l !== '\\\\' && l !== '{} \\\\' && l !== '{}\\\\')
+    .join('\\n')
+  return `\\boxed{\\begin{aligned}${cleaned}\\end{aligned}}`
+})
+ 
   return normalized.replace(bracketRegex, (match, inner) => {
     // Heuristics to decide if inner looks like LaTeX math:
     const mathIndicators = /\\[A-Za-z]+|\\\{|\\\}|\\\(|\\\)|\\\]|\\\[|\^|_|\{\}|\{|\}|\\frac|\\begin|\\end|\\sum|\\int|\\alpha|\\beta|\\gamma|\\boxed|\\sqrt/.test(inner)
@@ -311,6 +379,17 @@ export default function ChatInterface() {
         if (savedSettings) {
           setSettings(savedSettings)
           setTempSettings(savedSettings)
+          // Ensure GLM 4.5 Flash is always in favorite models
+          if (!savedSettings.favoriteModels?.includes(glmFlashModel.id)) {
+            setTempSettings(prev => ({
+              ...prev,
+              favoriteModels: [...(prev.favoriteModels || []), glmFlashModel.id],
+            }));
+            setSettings(prev => ({
+              ...prev,
+              favoriteModels: [...(prev.favoriteModels || []), glmFlashModel.id],
+            }));
+          }
 
           if (savedSettings.selectedModel) {
             // We'll set the model after models are loaded
@@ -465,17 +544,7 @@ export default function ChatInterface() {
     })
 
     // Highlight code blocks after updating the DOM. Use the imported hljs directly
-    setTimeout(() => {
-      document.querySelectorAll("pre code").forEach((block) => {
-        if (block.textContent && block.textContent.trim()) {
-          try {
-            hljs.highlightElement(block as HTMLElement)
-          } catch (e) {
-            // ignore highlight errors for partial code during streaming
-          }
-        }
-      })
-    }, 100)
+    // Highlighting handled by CodeBlock component; removed redundant DOM highlight
   }
 
   const completeStreamingMessage = (chatId: string, messageId: string) => {
@@ -495,17 +564,7 @@ export default function ChatInterface() {
     })
 
     // Final highlight pass after streaming completes
-    setTimeout(() => {
-      document.querySelectorAll("pre code").forEach((block) => {
-        if (block.textContent && block.textContent.trim()) {
-          try {
-            hljs.highlightElement(block as HTMLElement)
-          } catch (e) {
-            // ignore
-          }
-        }
-      })
-    }, 200)
+    // Final highlight now handled by CodeBlock component; removed redundant DOM highlight
   }
 
   const fetchModels = async () => {
@@ -533,14 +592,19 @@ export default function ChatInterface() {
 
       const data = await response.json()
       const sortedModels = data.data.sort((a: OpenRouterModel, b: OpenRouterModel) => a.name.localeCompare(b.name))
-      setModels(sortedModels)
-      setFilteredModels(sortedModels)
+      // Append GLM 4.5 Flash model to the list
+      const allModels = [...sortedModels, glmFlashModel];
+      setModels(allModels)
+      setFilteredModels(allModels)
 
       if (settings.selectedModel) {
-        const model = sortedModels.find((m: OpenRouterModel) => m.id === settings.selectedModel)
+        const model = allModels.find((m: OpenRouterModel) => m.id === settings.selectedModel)
         if (model) {
           setSelectedModel(model)
         }
+      } else {
+        // No model selected yet; default to GLM 4.5 Flash
+        setSelectedModel(glmFlashModel);
       }
 
       toast({
@@ -588,10 +652,10 @@ export default function ChatInterface() {
       console.log("[v0] Selected model:", selectedModel.id)
       console.log("[v0] API Key present:", !!settings.apiKey)
 
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const response = await fetch("https://api.z.ai/api/paas/v4/chat/completions", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${settings.apiKey}`,
+          Authorization: "Bearer f52a1d00b1104a07b5dbe3af1548c2ae.A5ZkpXooEMbkU8Kd",
           "Content-Type": "application/json",
           "HTTP-Referer": window.location.origin,
           "X-Title": "AI Chat Interface",
@@ -636,7 +700,7 @@ export default function ChatInterface() {
                   updateStreamingMessage(chatId, aiMessage.id, accumulatedContent)
                         // Try to highlight any newly completed code fragments in the streaming output
                         // so users see syntax highlighting as it arrives.
-                        highlightCodeBlocks()
+                        // Highlighting deferred to CodeBlock component after streaming completes
                 }
               } catch (e) {
                 // Skip invalid JSON
@@ -671,6 +735,64 @@ export default function ChatInterface() {
       abortControllerRef.current.abort()
       setIsGenerating(false)
     }
+  }
+
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast({
+        title: "Copied",
+        description: "Message copied to clipboard",
+      })
+    } catch (e) {
+      console.error("Clipboard error", e)
+      toast({
+        title: "Copy failed",
+        description: "Unable to copy to clipboard",
+        variant: "destructive",
+      })
+    }
+  }
+
+  const handleCopyMessage = (message: Message) => {
+    copyText(message.content)
+  }
+
+  const handleDeleteUserAndReply = (userMessageId: string) => {
+    if (!currentChatId) return
+    setChats((prevChats) => {
+      const updatedChats = prevChats.map((chat) => {
+        if (chat.id !== currentChatId) return chat
+        const idx = chat.messages.findIndex((m) => m.id === userMessageId && m.role === "user")
+        if (idx === -1) return chat
+        const newMessages = [...chat.messages]
+
+        // Remove the user message
+        newMessages.splice(idx, 1)
+
+        // If the next message is the assistant's response, remove it too
+        if (newMessages[idx]?.role === "assistant") {
+          const aiMsg = newMessages[idx]
+          if (aiMsg?.isStreaming && abortControllerRef.current) {
+            try {
+              abortControllerRef.current.abort()
+            } catch {}
+          }
+          newMessages.splice(idx, 1)
+        }
+
+        return { ...chat, messages: newMessages, updatedAt: new Date() }
+      })
+
+      // Persist after a short delay (consistent with other updates)
+      setTimeout(() => saveChatsToStorage(updatedChats), 100)
+      return updatedChats
+    })
+
+    toast({
+      title: "Deleted",
+      description: "Message removed",
+    })
   }
 
   const toggleFavoriteModel = (modelId: string) => {
@@ -963,30 +1085,66 @@ export default function ChatInterface() {
                     custom={index}
                   >
                     {message.role === "user" ? (
-                      <div className="bg-primary text-primary-foreground rounded-2xl px-4 py-2 max-w-[calc(90vw-20px)] shadow-lg mr-[20px]">
+                      <div className="flex flex-col items-end">
+                        <div className="bg-primary text-primary-foreground rounded-2xl px-4 py-2 max-w-[calc(90vw-20px)] shadow-lg mr-[20px]">
               {/* Larger font for assistant responses for better readability */}
-            <div className="prose prose-base md:prose-lg dark:prose-invert max-w-none break-words text-base md:text-lg [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                          <ReactMarkdown
-                            components={MarkdownComponents}
-                            remarkPlugins={[remarkGfm, remarkMath]}
-                            rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
-                            >
-                            {normalizeMathDelimiters(message.content)}
-                          </ReactMarkdown>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="w-full px-2 sm:px-0 flex justify-center">
-                        <div className="bg-card border border-border rounded-2xl p-4 shadow-lg w-[90vw] max-w-[90vw]">
-                          <div className="prose prose-sm dark:prose-invert max-w-none break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+              <div className="prose prose-base md:prose-lg dark:prose-invert max-w-none break-words text-base md:text-lg [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_katex]:text-lg [&_katex-display]:text-lg">
                             <ReactMarkdown
-                              components={MarkdownComponents}
-                              remarkPlugins={[remarkGfm, remarkMath]}
-                              rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                              components={{
+                                ...MarkdownComponents,
+                                code: (props:any) => <MarkdownCode {...props} isStreaming={message.isStreaming} />,
+                              }}
+                              remarkPlugins={[[remarkMath, { singleDollarTextMath: true }], remarkGfm]}
+                              rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore", trust: true }]]}
                             >
                               {normalizeMathDelimiters(message.content)}
                             </ReactMarkdown>
                           </div>
+                        </div>
+                        <div className="flex items-center justify-end gap-1 mt-1 pr-[20px]">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2"
+                            onClick={() => handleCopyMessage(message)}
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-destructive hover:bg-destructive/10"
+                            onClick={() => handleDeleteUserAndReply(message.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="w-full flex flex-col items-center px-2 sm:px-0">
+                        <div className="bg-card border border-border rounded-2xl p-4 shadow-lg w-[90vw] max-w-[90vw]">
+                          <div className="prose prose-sm dark:prose-invert max-w-none break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_katex]:text-sm [&_katex-display]:text-sm">
+                            <ReactMarkdown
+                              components={{
+                                ...MarkdownComponents,
+                                code: (props:any) => <MarkdownCode {...props} isStreaming={message.isStreaming} />,
+                              }}
+                              remarkPlugins={[[remarkMath, { singleDollarTextMath: true }], remarkGfm]}
+                              rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore", trust: true }]]}
+                            >
+                              {normalizeMathDelimiters(message.content)}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                        <div className="w-[90vw] max-w-[90vw] flex justify-end mt-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2"
+                            onClick={() => handleCopyMessage(message)}
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
                         </div>
                       </div>
                     )}
@@ -1034,6 +1192,7 @@ export default function ChatInterface() {
   <div className="sticky bottom-0 z-20 p-4 border-t border-border bg-card/30 backdrop-blur-sm">
           <div className="flex items-end space-x-3">
             <div className="flex-1 space-y-3">
+              {/*
               <div className="flex items-center space-x-4">
                 <div className="flex items-center space-x-2">
                   <Button
@@ -1056,6 +1215,7 @@ export default function ChatInterface() {
                   </Button>
                 </div>
               </div>
+              */}
 
               <div className="flex items-end space-x-3">
                 <div className="flex-1">
