@@ -1285,8 +1285,8 @@ export default function ChatInterface() {
                   <Textarea
                     value={inputValue}
                     onChange={(e) => setInputValue(e.target.value)}
-                    placeholder="Type your message..."
-                    className="min-h-[44px] max-h-32 resize-none rounded-2xl border-border bg-background/50 backdrop-blur-sm focus:bg-background/80 transition-all duration-200"
+                    placeholder="Ask anything… Try: “Summarize this PDF”, “Draft a friendly email”, or “Explain this error”. Enter to send · Shift+Enter for newline"
+                    className="min-h-[44px] max-h-32 resize-none rounded-2xl border-border bg-background/50 backdrop-blur-sm focus:bg-background/80 transition-all duration-200 placeholder:italic placeholder:text-muted-foreground/70 placeholder:font-medium placeholder:tracking-wide"
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault()
