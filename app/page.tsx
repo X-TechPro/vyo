@@ -332,6 +332,9 @@ export default function ChatInterface() {
   const [modelSearch, setModelSearch] = useState("")
   const [loadingModels, setLoadingModels] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [inputFocused, setInputFocused] = useState(false)
+  const [isMultiline, setIsMultiline] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const [settings, setSettings] = useState<SettingsData>({
     apiKey: "",
     favoriteModels: [],
@@ -357,6 +360,18 @@ export default function ChatInterface() {
   const messages = currentChat?.messages || []
 
   const favoriteModels = models.filter((model) => (settings.favoriteModels || []).includes(model.id))
+
+  const updateMultiline = () => {
+    const el = textareaRef.current
+    if (!el) return
+    const cs = window.getComputedStyle(el)
+    const lh = parseFloat(cs.lineHeight || "20")
+    const pt = parseFloat(cs.paddingTop || "0")
+    const pb = parseFloat(cs.paddingBottom || "0")
+    const contentHeight = el.scrollHeight - pt - pb
+    const lines = contentHeight / (lh || 1)
+    setIsMultiline(lines > 1.2)
+  }
 
   const scheduleAutoScroll = () => {
     if (scrollRAFRef.current != null) return
@@ -1282,18 +1297,33 @@ export default function ChatInterface() {
 
               <div className="flex items-end space-x-3">
                 <div className="flex-1">
-                  <Textarea
-                    value={inputValue}
-                    onChange={(e) => setInputValue(e.target.value)}
-                    placeholder="Ask anything… Press Enter to send · Shift+Enter for newline"
-                    className="min-h-[44px] max-h-32 resize-none rounded-full border-border bg-background/50 backdrop-blur-sm focus:bg-background/80 transition-all duration-200 placeholder:italic placeholder:text-muted-foreground/70 placeholder:font-medium placeholder:tracking-wide"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault()
-                        handleSendMessage()
-                      }
-                    }}
-                  />
+                  <div className="relative">
+                    {/* Custom centered placeholder overlay */}
+                    {(!inputValue || inputValue.length === 0) && (
+                      <div className="pointer-events-none absolute inset-0 flex items-center px-3 text-sm md:text-sm italic font-medium tracking-wide text-muted-foreground/70 select-none">
+                        Ask anything… Press Enter to send · Shift+Enter for newline
+                      </div>
+                    )}
+                    <Textarea
+                      ref={textareaRef}
+                      value={inputValue}
+                      onChange={(e) => {
+                        setInputValue(e.target.value)
+                        updateMultiline()
+                      }}
+                      onInput={updateMultiline}
+                      onFocus={() => setInputFocused(true)}
+                      onBlur={() => setInputFocused(false)}
+                      placeholder=""
+                      className={`${!isMultiline ? "rounded-full" : "rounded-2xl"} min-h-[44px] max-h-32 resize-none border-border bg-background/50 backdrop-blur-sm focus:bg-background/80 transition-all duration-200 placeholder:italic placeholder:text-transparent placeholder:font-medium placeholder:tracking-wide focus-visible:ring-0 focus:ring-0 focus-visible:border-primary`}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault()
+                          handleSendMessage()
+                        }
+                      }}
+                    />
+                  </div>
                 </div>
                 {isGenerating ? (
                   <Button
