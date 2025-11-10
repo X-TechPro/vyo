@@ -7,8 +7,8 @@ import "katex/dist/katex.min.css"
 
 export const metadata: Metadata = {
   title: "AI Chat Interface",
-  description: "Premium AI Chat Interface with OpenRouter integration",
-  keywords: ["AI", "chat", "OpenRouter", "assistant", "conversation"],
+  description: "Premium AI Chat Interface",
+  keywords: ["AI", "chat", "assistant", "conversation"],
   authors: [{ name: "AI Chat Interface" }],
   creator: "AI Chat Interface",
   publisher: "AI Chat Interface",

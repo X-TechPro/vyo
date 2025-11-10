@@ -62,7 +62,7 @@ interface Chat {
   updatedAt: Date
 }
 
-interface OpenRouterModel {
+interface ModelOption {
   id: string
   name: string
   description?: string
@@ -72,7 +72,7 @@ interface OpenRouterModel {
     completion: string
   }
 }
-const glmFlashModel: OpenRouterModel = {
+const glmFlashModel: ModelOption = {
   id: "glm-4.5-flash",
   name: "GLM 4.5 Flash",
 };
@@ -323,12 +323,12 @@ export default function ChatInterface() {
   const [inputValue, setInputValue] = useState("")
   const [webSearch, setWebSearch] = useState(false)
   const [think, setThink] = useState(false)
-  const [selectedModel, setSelectedModel] = useState<OpenRouterModel | null>(null)
+  const [selectedModel, setSelectedModel] = useState<ModelOption | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
-  const [models, setModels] = useState<OpenRouterModel[]>([])
-  const [filteredModels, setFilteredModels] = useState<OpenRouterModel[]>([])
+  const [models, setModels] = useState<ModelOption[]>([])
+  const [filteredModels, setFilteredModels] = useState<ModelOption[]>([])
   const [modelSearch, setModelSearch] = useState("")
   const [loadingModels, setLoadingModels] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
@@ -393,11 +393,25 @@ export default function ChatInterface() {
         await storage.migrateFromLocalStorage()
 
         const savedSettings = await storage.loadSettings()
+        const DEFAULT_ZAI_KEY = "f52a1d00b1104a07b5dbe3af1548c2ae.A5ZkpXooEMbkU8Kd"
+        let localKey = localStorage.getItem("zai-api-key") || ""
+
+        // Initialize default key in localStorage on first visit
+        if (!localKey) {
+          localKey = DEFAULT_ZAI_KEY
+          localStorage.setItem("zai-api-key", localKey)
+        }
+
         if (savedSettings) {
-          setSettings(savedSettings)
-          setTempSettings(savedSettings)
+          // Ensure API key is present from localStorage (override empty/missing)
+          const ensuredSettings = {
+            ...savedSettings,
+            apiKey: savedSettings.apiKey || localKey,
+          }
+          setSettings(ensuredSettings)
+          setTempSettings(ensuredSettings)
           // Ensure GLM 4.5 Flash is always in favorite models
-          if (!savedSettings.favoriteModels?.includes(glmFlashModel.id)) {
+          if (!ensuredSettings.favoriteModels?.includes(glmFlashModel.id)) {
             setTempSettings(prev => ({
               ...prev,
               favoriteModels: [...(prev.favoriteModels || []), glmFlashModel.id],
@@ -408,15 +422,27 @@ export default function ChatInterface() {
             }));
           }
 
-          if (savedSettings.selectedModel) {
-            // We'll set the model after models are loaded
+          if (ensuredSettings.selectedModel) {
+            // We'll set the model after models are potentially loaded
             setTimeout(() => {
-              const model = models.find((m) => m.id === savedSettings.selectedModel)
+              const model = models.find((m) => m.id === ensuredSettings.selectedModel)
               if (model) {
                 setSelectedModel(model)
               }
             }, 1000)
           }
+          // Persist ensured settings
+          await storage.saveSettings(ensuredSettings)
+        } else {
+          // No settings saved yet; create defaults with localKey
+          const defaults = {
+            apiKey: localKey,
+            favoriteModels: [glmFlashModel.id],
+            selectedModel: glmFlashModel.id,
+          }
+          setSettings(defaults)
+          setTempSettings(defaults)
+          await storage.saveSettings(defaults)
         }
 
         const savedChats = await storage.loadChats()
@@ -439,7 +465,7 @@ export default function ChatInterface() {
   }, [])
 
   useEffect(() => {
-    if (settings.apiKey && models.length === 0) {
+    if (models.length === 0) {
       fetchModels().then(() => {
         if (settings.selectedModel) {
           const model = models.find((m) => m.id === settings.selectedModel)
@@ -449,7 +475,7 @@ export default function ChatInterface() {
         }
       })
     }
-  }, [settings.apiKey])
+  }, [settings.selectedModel])
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -600,54 +626,31 @@ export default function ChatInterface() {
   }
 
   const fetchModels = async () => {
-    if (!settings.apiKey && !tempSettings.apiKey) {
-      toast({
-        title: "API Key Required",
-        description: "Please enter your OpenRouter API key first",
-        variant: "destructive",
-      })
-      return
-    }
-
     setLoadingModels(true)
     try {
-      const response = await fetch("https://openrouter.ai/api/v1/models", {
-        headers: {
-          Authorization: `Bearer ${settings.apiKey || tempSettings.apiKey}`,
-          "Content-Type": "application/json",
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-
-      const data = await response.json()
-      const sortedModels = data.data.sort((a: OpenRouterModel, b: OpenRouterModel) => a.name.localeCompare(b.name))
-      // Append GLM 4.5 Flash model to the list
-      const allModels = [...sortedModels, glmFlashModel];
+      // Use a local, curated list of models. Ensure GLM 4.5 Flash is available.
+      const allModels: ModelOption[] = [glmFlashModel]
       setModels(allModels)
       setFilteredModels(allModels)
 
       if (settings.selectedModel) {
-        const model = allModels.find((m: OpenRouterModel) => m.id === settings.selectedModel)
+        const model = allModels.find((m: ModelOption) => m.id === settings.selectedModel)
         if (model) {
           setSelectedModel(model)
         }
       } else {
-        // No model selected yet; default to GLM 4.5 Flash
-        setSelectedModel(glmFlashModel);
+        setSelectedModel(glmFlashModel)
       }
 
       toast({
-        title: "Models Loaded",
-        description: `Loaded ${sortedModels.length} models successfully`,
+        title: "Models Ready",
+        description: `Loaded ${allModels.length} model(s)`,
       })
     } catch (error) {
-      console.error("Error fetching models:", error)
+      console.error("Error preparing models:", error)
       toast({
         title: "Error",
-        description: "Failed to fetch models. Please check your API key.",
+        description: "Failed to prepare models.",
         variant: "destructive",
       })
     } finally {
@@ -689,7 +692,7 @@ export default function ChatInterface() {
       const response = await fetch("https://api.z.ai/api/paas/v4/chat/completions", {
         method: "POST",
         headers: {
-          Authorization: "Bearer f52a1d00b1104a07b5dbe3af1548c2ae.A5ZkpXooEMbkU8Kd",
+          Authorization: `Bearer ${settings.apiKey}`,
           "Content-Type": "application/json",
           "HTTP-Referer": window.location.origin,
           "X-Title": "AI Chat Interface",
@@ -853,15 +856,6 @@ export default function ChatInterface() {
       return
     }
 
-    if (!tempSettings.apiKey.startsWith("sk-or-")) {
-      toast({
-        title: "Warning",
-        description: "API key should start with 'sk-or-' for OpenRouter",
-        variant: "destructive",
-      })
-      return
-    }
-
     const settingsToSave = {
       ...tempSettings,
       selectedModel: selectedModel?.id,
@@ -871,6 +865,10 @@ export default function ChatInterface() {
 
     try {
       await storage.saveSettings(settingsToSave)
+      // Persist to localStorage for first-party override behavior
+      try {
+        localStorage.setItem("zai-api-key", settingsToSave.apiKey)
+      } catch {}
       setSettingsOpen(false)
 
       toast({
@@ -895,7 +893,7 @@ export default function ChatInterface() {
     setModelSelectorOpen(open)
   }
 
-  const selectModel = async (model: OpenRouterModel) => {
+  const selectModel = async (model: ModelOption) => {
     setSelectedModel(model)
     setModelSelectorOpen(false)
 
@@ -918,7 +916,7 @@ export default function ChatInterface() {
     if (!settings.apiKey) {
       toast({
         title: "API Key Required",
-        description: "Please set your OpenRouter API key in settings first",
+        description: "Please set your Z.AI API key in settings first",
         variant: "destructive",
       })
       setSettingsOpen(true)
@@ -1329,14 +1327,14 @@ export default function ChatInterface() {
           </DialogHeader>
           <div className="flex-1 overflow-y-auto space-y-4 pr-2">
             <div className="space-y-2">
-              <Label htmlFor="api-key">OpenRouter API Key</Label>
+              <Label htmlFor="api-key">Z.AI API Key</Label>
               <div className="relative">
                 <Input
                   id="api-key"
                   type={showApiKey ? "text" : "password"}
                   value={tempSettings.apiKey}
                   onChange={(e) => setTempSettings({ ...tempSettings, apiKey: e.target.value })}
-                  placeholder="sk-or-v1-..."
+                  placeholder="Enter your Z.AI API key"
                   className="pr-10"
                 />
                 <Button
@@ -1362,7 +1360,7 @@ export default function ChatInterface() {
                 <Label>Models</Label>
                 <Button
                   onClick={fetchModels}
-                  disabled={!tempSettings.apiKey || loadingModels}
+                  disabled={loadingModels}
                   size="sm"
                   variant="outline"
                   className="text-xs bg-transparent"
