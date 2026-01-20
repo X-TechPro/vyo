@@ -73,8 +73,8 @@ interface ModelOption {
   }
 }
 const glmFlashModel: ModelOption = {
-  id: "glm-4.5-flash",
-  name: "GLM 4.5 Flash",
+  id: "glm-4.7-flash",
+  name: "GLM 4.7 Flash",
 };
 
 interface SettingsData {
@@ -343,7 +343,7 @@ export default function ChatInterface() {
     apiKey: "",
     favoriteModels: [],
   })
-  // GLM 4.5 Flash reasoning stream state
+  // GLM 4.7 Flash reasoning stream state
   const [reasoningExpandedMap, setReasoningExpandedMap] = useState<Record<string, boolean>>({})
   const toggleReasoningExpanded = (id: string) => {
     setReasoningExpandedMap((prev) => ({ ...prev, [id]: !(prev[id] ?? true) }))
@@ -425,7 +425,7 @@ export default function ChatInterface() {
           }
           setSettings(ensuredSettings)
           setTempSettings(ensuredSettings)
-          // Ensure GLM 4.5 Flash is always in favorite models
+          // Ensure GLM 4.7 Flash is always in favorite models
           if (!ensuredSettings.favoriteModels?.includes(glmFlashModel.id)) {
             setTempSettings(prev => ({
               ...prev,
@@ -643,7 +643,7 @@ export default function ChatInterface() {
   const fetchModels = async () => {
     setLoadingModels(true)
     try {
-      // Use a local, curated list of models. Ensure GLM 4.5 Flash is available.
+      // Use a local, curated list of models. Ensure GLM 4.7 Flash is available.
       const allModels: ModelOption[] = [glmFlashModel]
       setModels(allModels)
       setFilteredModels(allModels)
@@ -684,7 +684,7 @@ export default function ChatInterface() {
    role: "assistant",
    timestamp: new Date(),
    isStreaming: true,
-   reasoningContent: selectedModel.id === "glm-4.5-flash" ? "" : undefined,
+   reasoningContent: selectedModel.id === "glm-4.7-flash" ? "" : undefined,
    modelId: selectedModel.id,
  }
 
@@ -749,7 +749,7 @@ export default function ChatInterface() {
                 const delta = parsed.choices?.[0]?.delta || {}
                 const content = delta.content
                 const reasoning = delta.reasoning_content
-                if (typeof reasoning === "string" && reasoning.length > 0 && selectedModel.id === "glm-4.5-flash") {
+                if (typeof reasoning === "string" && reasoning.length > 0 && selectedModel.id === "glm-4.7-flash") {
                   updateStreamingReasoning(chatId, aiMessage.id, reasoning)
                 }
                 if (typeof content === "string" && content.length > 0) {
@@ -1173,7 +1173,7 @@ export default function ChatInterface() {
                       </div>
                     ) : (
                       <div className="w-full flex flex-col items-center px-2 sm:px-0">
-                        {(message.modelId === "glm-4.5-flash" && (message.isStreaming || (message.reasoningContent && message.reasoningContent.length > 0))) && (
+                        {(message.modelId === "glm-4.7-flash" && (message.isStreaming || (message.reasoningContent && message.reasoningContent.length > 0))) && (
                           <div className="w-[90vw] max-w-[90vw] mb-4">
                             <button
                               type="button"
@@ -1193,7 +1193,7 @@ export default function ChatInterface() {
                             )}
                           </div>
                         )}
-                        {!(message.modelId === "glm-4.5-flash" && (!message.content || message.content.length === 0)) && (
+                        {!(message.modelId === "glm-4.7-flash" && (!message.content || message.content.length === 0)) && (
                           <>
                             <div className="bg-card border border-border rounded-2xl p-4 shadow-lg w-[90vw] max-w-[90vw]">
                               <div className="prose prose-sm dark:prose-invert max-w-none break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_katex]:text-sm [&_katex-display]:text-sm">
@@ -1228,7 +1228,7 @@ export default function ChatInterface() {
                   </motion.div>
                 ))}
 
-                {isGenerating && selectedModel?.id !== "glm-4.5-flash" && (
+                {isGenerating && selectedModel?.id !== "glm-4.7-flash" && (
                   <motion.div
                     className="flex justify-center animate-fadeInUp"
                     initial="hidden"
